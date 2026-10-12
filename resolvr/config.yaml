@@ -1,5 +1,5 @@
 name: Resolvr
-version: "1.3.0"
+version: "1.3.1"
 slug: resolvr
 description: "Monitoring dashboard for Technitium DNS Server in a Home Assistant sidebar panel: live query traffic, clients, cache, zones, DHCP, blocking and block-list updates."
 url: https://github.com/bassem-elsodany/resolvr-dns-dashboard
@@ -16,6 +16,12 @@ watchdog: http://[HOST]:[PORT:8787]/healthz
 options:
   technitium_url: "http://homeassistant.local:5380"
   technitium_token: ""
+  log_level: "info"
+  log_format: "text"
+  log_requests: true
 schema:
   technitium_url: url
   technitium_token: password
+  log_level: list(silent|error|warn|info|debug)
+  log_format: list(text|json)
+  log_requests: bool

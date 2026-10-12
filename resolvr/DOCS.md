@@ -28,6 +28,14 @@ The Resolution, Clients and Query Logs pages need one of Technitium's query-logg
 - Resolvr keeps a small database in the add-on's data folder. Home Assistant keeps it across restarts and updates and includes it in backups. It holds the Technitium address and token, so treat a backup like a password.
 - A few small things (the open tab, block-list and cache history, which clients you have already seen) are remembered in your browser, not on the server.
 
+## Logging
+The add-on's **Log** tab shows what Resolvr writes. Three options in the Configuration tab control how much:
+- `log_level`: `silent`, `error`, `warn`, `info` (default) or `debug`. `warn` is the quiet choice: it keeps failed sign-ins, failed connection checks and failed admin actions. The container healthcheck is only logged at `debug`.
+- `log_requests`: turn off to drop the one-line-per-request log and keep everything else.
+- `log_format`: `text` (default) or `json`.
+
+Sign-ins, user and connection changes and every admin action (what was done and the result) are logged at `info`. Passwords and tokens never are. Restart the add-on after changing an option.
+
 ## Troubleshooting
 - **"Could not reach the server" or no data:** check `technitium_url` from the Home Assistant machine, and that the token is valid (create a new one if unsure). An `https://` address with a self-signed certificate is not accepted; use `http://` on your network or a trusted certificate.
 - **Pages say a query-logging app is missing:** install one in Technitium (Apps → App Store).
