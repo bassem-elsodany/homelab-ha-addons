@@ -10,11 +10,13 @@ This add-on runs the published [Resolvr](https://github.com/bassem-elsodany/reso
 
 ## Screenshots
 
-All screenshots use invented data (made-up devices, networks and addresses).
+All screenshots use invented data (made-up devices, networks and addresses). The two cluster screenshots show a Technitium cluster; with a standalone server those views are not shown.
 
 | Clients | Blocked Zones |
 |---|---|
 | ![Clients](https://raw.githubusercontent.com/bassem-elsodany/homelab-ha-addons/main/resolvr/docs/screenshots/clients.png) | ![Blocked Zones](https://raw.githubusercontent.com/bassem-elsodany/homelab-ha-addons/main/resolvr/docs/screenshots/blocked-zones.png) |
+| **Compare nodes** (Technitium cluster) | **Zones** (Technitium cluster) |
+| ![Compare nodes](https://raw.githubusercontent.com/bassem-elsodany/homelab-ha-addons/main/resolvr/docs/screenshots/overview-compare-nodes.png) | ![Zones on a cluster](https://raw.githubusercontent.com/bassem-elsodany/homelab-ha-addons/main/resolvr/docs/screenshots/zones.png) |
 
 ## Install
 1. Add this repository to Home Assistant (see the [catalogue](../README.md)).
