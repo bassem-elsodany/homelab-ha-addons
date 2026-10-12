@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- Resolvr 1.3.2: a rejected request now says why in the Log tab, and the sign-in form explains a session cookie the browser is not sending. See the [release notes](https://github.com/bassem-elsodany/resolvr-dns-dashboard/releases/tag/v1.3.2).
+
 ## 1.3.1
 
 - Resolvr 1.3.1: choose how much it logs. New options `log_level`, `log_format` and `log_requests` in the Configuration tab; the healthcheck is no longer logged unless the level is `debug`. See the [release notes](https://github.com/bassem-elsodany/resolvr-dns-dashboard/releases/tag/v1.3.1).
