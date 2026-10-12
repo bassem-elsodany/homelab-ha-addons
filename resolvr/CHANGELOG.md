@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1
+
+- Resolvr 1.3.1: choose how much it logs. New options `log_level`, `log_format` and `log_requests` in the Configuration tab; the healthcheck is no longer logged unless the level is `debug`. See the [release notes](https://github.com/bassem-elsodany/resolvr-dns-dashboard/releases/tag/v1.3.1).
+
 ## 1.3.0
 
 - Resolvr 1.3.0: Technitium cluster support, with a scope on every panel. See the [release notes](https://github.com/bassem-elsodany/resolvr-dns-dashboard/releases/tag/v1.3.0).

@@ -15,11 +15,18 @@ def test_every_schema_option_is_visible_in_the_form():
     assert set(MANIFEST["schema"]) == set(MANIFEST["options"])
 
 
-def test_the_connection_options_are_the_ones_resolvr_reads():
-    """The image reads exactly these two keys from /data/options.json (backend/src/addon.ts in the Resolvr repository)."""
-    assert set(MANIFEST["options"]) == {"technitium_url", "technitium_token"}
+def test_the_options_are_the_ones_resolvr_reads():
+    """The image reads exactly these keys from /data/options.json (backend/src/addon.ts in the Resolvr repository)."""
+    assert set(MANIFEST["options"]) == {"technitium_url", "technitium_token", "log_level", "log_format", "log_requests"}
     assert MANIFEST["schema"]["technitium_token"] == "password"
     assert MANIFEST["schema"]["technitium_url"] == "url"
+
+
+def test_the_logging_options_offer_exactly_the_values_resolvr_accepts():
+    assert MANIFEST["schema"]["log_level"] == "list(silent|error|warn|info|debug)"
+    assert MANIFEST["schema"]["log_format"] == "list(text|json)"
+    assert MANIFEST["schema"]["log_requests"] == "bool"
+    assert MANIFEST["options"]["log_level"] == "info"
 
 
 def test_it_runs_the_published_image_and_does_not_build_on_the_device():
