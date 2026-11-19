@@ -37,6 +37,34 @@ class Connection:
         return self.status == "CONNECTED"
 
 
+@dataclass(frozen=True)
+class TunnelProbe:
+    """One VPN client as the UDM's own test saw it: a 4-ping and one HTTPS request sent through the tunnel."""
+    iface: str
+    ip: str                  # the tunnel's own address (10.5.x.2): the key to match it with a VPN client, because interface numbers change
+    loss: float              # percent of the pings lost
+    rtt_ms: float | None
+    http: int                # status of the HTTPS request (0 = no answer)
+    seconds: float           # how long the request took
+
+    @property
+    def state(self) -> str:
+        if self.http != 200 or self.loss >= 50:
+            return "DEAD"
+        if self.loss > 0 or self.seconds > 3:
+            return "SLOW"
+        return "OK"
+
+
+@dataclass(frozen=True)
+class UdmReading:
+    probes: dict[str, TunnelProbe]       # by tunnel address
+    load: float                          # the UDM's 1-minute load average
+    wan_ok: bool                         # a plain ping over the normal internet connection worked
+    reprovisions_1m: int                 # lines in the last minute showing UniFi re-provisioned its network (0 = calm)
+    at: float                            # when it was taken (watchdog clock)
+
+
 @dataclass
 class Route:
     id: str
