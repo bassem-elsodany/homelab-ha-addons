@@ -6,13 +6,15 @@ and require (a) the request works, (b) the country matches the tunnel's ISO code
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
 
 from .clock import Clock
 from .config import ProbeCfg, ProbeEndpoint
-from .models import ProbeResult, Snapshot, Tunnel
+from .models import ProbeResult, Snapshot, Tunnel, UdmReading
+from .udm import UdmError, UdmSsh, build_script, parse_reading
 from .unifi import UniFiClient
 
 log = logging.getLogger("vpn_watchdog.probe")
@@ -111,3 +113,93 @@ class TunnelTester:
         if self.cfg.mode != "direct" or pre:
             return None
         return self.prober.probe(expect, snap.wan_ip)
+
+
+class UdmTester(TunnelTester):
+    """The real test: a ping and one HTTPS request sent through each VPN client that is up, run on the UDM itself over SSH (UniFi's API
+    cannot do this, and its "CONNECTED" stays true while a tunnel passes nothing).
+
+    A verdict is only given when the test really ran and saw the tunnel. Anything else (SSH down, the UDM too busy, the tunnel not up, an old
+    reading) is "no verdict" (None), which the engine never acts on."""
+
+    CACHE_SECONDS = 55           # a regular test reuses the last reading for this long: one SSH run a minute
+    STALE_SECONDS = 150          # a reading older than this says nothing any more
+    BACKOFF_MAX = 900.0          # after a failed SSH run wait 1, 2, 4 ... minutes, at most this many seconds
+
+    def __init__(self, cfg: ProbeCfg, ssh: UdmSsh, clock: Clock):
+        self.cfg, self.ssh, self.clock = cfg, ssh, clock
+        self.unifi = self.prober = None
+        self._last: UdmReading | None = None
+        self._fails = 0
+        self._retry_at = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.cfg.ssh.configured
+
+    @property
+    def can_pretest(self) -> bool:
+        return True
+
+    def _usable(self) -> UdmReading | None:
+        last = self._last
+        return last if last is not None and self.clock.now() - last.at <= self.STALE_SECONDS else None
+
+    def reading(self, fresh: bool = False) -> UdmReading | None:
+        """The latest reading, running the test over SSH when the cached one is too old (or `fresh`). None when nothing usable exists."""
+        if not self.enabled:
+            return None
+        now = self.clock.now()
+        if now < self._retry_at:
+            return self._usable()
+        if not fresh and self._last is not None and now - self._last.at < self.CACHE_SECONDS:
+            return self._last
+        try:
+            output = self.ssh.run(build_script(self.cfg.load_max))
+        except UdmError as e:
+            self._fails += 1
+            wait = min(self.BACKOFF_MAX, 60.0 * 2 ** (self._fails - 1))
+            self._retry_at = now + wait
+            log.warning("tunnel test on the UDM failed (%s); next try in %.0fs", e, wait)
+            return self._usable()
+        self._fails, self._retry_at = 0, 0.0
+        self._last = parse_reading(output, now)
+        return self._last
+
+    def test(self, tunnel: Tunnel, snap: Snapshot, *, pre: bool, expect: str | None = None) -> ProbeResult | None:
+        r = self.reading(fresh=pre)       # a candidate was not up in the cached reading, so a pre-test always looks again
+        if r is None or r.load > self.cfg.load_max:
+            return None
+        p = r.probes.get((tunnel.subnet or "").split("/")[0])
+        if p is None:
+            return None
+        if p.state == "DEAD":
+            return ProbeResult(False, f"dead: {p.http or 'no'} HTTPS answer, {p.loss:.0f}% ping loss (tested from the UDM)")
+        if p.state == "SLOW":
+            return ProbeResult(True, f"slow: {p.loss:.0f}% ping loss, HTTPS in {p.seconds:.1f}s (tested from the UDM)")
+        return ProbeResult(True, "ok")
+
+    def context(self) -> str | None:
+        """Why nothing should be changed right now, when the cause is probably not one VPN. None when it is fine to act."""
+        r = self._usable()
+        if r is None:
+            return None
+        if r.load > self.cfg.load_max:
+            return f"the UDM is overloaded (load {r.load:g}): nothing is changed until it calms down"
+        if not r.wan_ok:
+            return "the plain internet connection is down"
+        if len(r.probes) >= 2 and all(p.state == "DEAD" for p in r.probes.values()):
+            return "every VPN failed the test"
+        return None
+
+    def settled(self) -> bool:
+        """False while UniFi re-provisioned its network in the last minute. True when it cannot tell (no reading)."""
+        r = self._usable()
+        return r is None or r.reprovisions_1m == 0
+
+
+def make_tester(cfg: ProbeCfg, unifi: UniFiClient | None, clock: Clock, state_dir: str | None) -> TunnelTester:
+    """The UDM test when an SSH login is filled in, otherwise the old behaviour (nothing changes without it)."""
+    if cfg.ssh.configured:
+        return UdmTester(cfg, UdmSsh(cfg.ssh, host_key_file=os.path.join(state_dir, "udm_host_key") if state_dir else None), clock)
+    return TunnelTester(cfg, unifi, Prober(cfg), clock)
