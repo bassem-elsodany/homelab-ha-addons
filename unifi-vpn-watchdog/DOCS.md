@@ -38,6 +38,26 @@ active client. Those policies are named `vpnwd: <group> › <VLAN or devices>` f
 UniFi. It never edits or deletes a policy you made. UniFi applies the first live policy in its list, so a policy of yours that covers the same VLAN and
 sits above the watchdog's one still wins. The Status page warns about it and offers to switch that policy off, only after you confirm.
 
+## Testing every VPN from the UDM (SSH)
+
+UniFi says "connected" as soon as a tunnel's handshake works, which stays true while the tunnel passes nothing, and its API cannot send a test through a VPN client. With an SSH login to the UDM the add-on tests every VPN that is up, once a minute, and switches away from a dead one by itself.
+
+**Set it up** (nothing changes until you do):
+1. Make a key used only for this: `ssh-keygen -t ed25519 -N "" -C "vpn-watchdog" -f udm_ssh_key`.
+2. Add the public half (`udm_ssh_key.pub`) to the UDM's SSH keys in UniFi's settings (the menu name depends on your UniFi version).
+3. Put the private file `udm_ssh_key` in the add-on's config folder (next to `config.yaml`; in Home Assistant that is the add-on's `addon_config` folder). The key text never goes in an option.
+4. In the add-on's Configuration tab set `udm_ssh_host` (the UDM's address), `udm_ssh_user` and leave `udm_ssh_key_file` as `udm_ssh_key`. Restart the add-on. A password in `udm_ssh_password` works too, but a key is safer.
+
+The first connection remembers the UDM's SSH host key; if it ever changes the add-on refuses to run anything until you delete `udm_host_key` from the add-on's data folder.
+
+**What it runs on the UDM:** one fixed, read-only script: the load average, one ping over the normal internet, and for every VPN interface four pings and one HTTPS request sent through it. No text from UniFi or from you is put into it, and nothing on the UDM is changed.
+
+**What it does with the result**
+- OK / SLOW (some loss or a slow answer: one alert per 30 minutes, nothing is switched) / DEAD. A test that could not run (SSH down, UDM busy, tunnel not up, an old result) is never a verdict.
+- The VPN in use must be DEAD 3 tests in a row. Then the next VPN in your order is tried: one candidate per attempt, tested before it gets any traffic, at least 2 minutes between attempts.
+- Limits that protect the UDM: the test is skipped while the UDM load is above 4; SSH failures back off 1, 2, 4 ... 15 minutes; nothing is switched while UniFi re-provisioned in the last minute; nothing is changed when every VPN fails or the plain internet is down (one `check_hold` alert per 30 minutes); at least 10 minutes between switches; at most 3 switches or attempts per hour and 6 per day; plus the write budgets (20 routing-policy writes and 12 VPN-client switches per 10 minutes).
+- When a limit is reached the group is paused and one critical `check_stopped` alert says so. Fix the cause, then resume the group (that also clears its attempt history and bans). `udm_on_stop: keep` (default) leaves the group as it is; `direct` switches the group's VPN clients off so its VLANs use the normal internet until you resume.
+
 ## Not available yet
 Failover on speed or delay (for example: when the download is below a number you choose) is planned. UniFi cannot speed-test a single VPN client, so it
 will need a small dedicated test device. Today a group fails over when its client stops carrying traffic.

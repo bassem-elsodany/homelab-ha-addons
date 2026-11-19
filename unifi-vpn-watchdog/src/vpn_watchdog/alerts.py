@@ -49,6 +49,30 @@ EVENTS: dict[str, dict[str, Any]] = {
         "title": "VPN watchdog: changes to UniFi paused",
         "message": "{reason}",
     },
+    "tunnel_slow": {
+        "when": "The tunnel in use passes traffic, but the UDM's own test saw packet loss or a slow response. Nothing is switched; at most one alert per 30 minutes.",
+        "level": "warning", "enabled": True,
+        "title": "VPN {group}: {tunnel} is slow",
+        "message": "{reason}",
+    },
+    "tunnel_recovered": {
+        "when": "The tunnel in use failed at least two tests in a row and then passed, before it was declared down.",
+        "level": "info", "enabled": True,
+        "title": "VPN {group}: {tunnel} is working again",
+        "message": "{reason}",
+    },
+    "check_hold": {
+        "when": "A tunnel failed its test, but the cause is probably not that one tunnel (every VPN failed, the plain internet is down, or the UDM is overloaded), so nothing was changed. At most one alert per 30 minutes.",
+        "level": "warning", "enabled": True,
+        "title": "VPN {group}: nothing changed",
+        "message": "{reason}",
+    },
+    "check_stopped": {
+        "when": "A switching limit was reached (too many switches or attempts in an hour or a day), so the group was paused. It needs you: fix the cause, then resume the group.",
+        "level": "critical", "enabled": True,
+        "title": "VPN {group}: stopped, needs you",
+        "message": "{reason}",
+    },
     "exhausted": {
         "when": "The active tunnel is down and every candidate failed or is paused after failing. Needs your attention.",
         "level": "critical", "enabled": True,

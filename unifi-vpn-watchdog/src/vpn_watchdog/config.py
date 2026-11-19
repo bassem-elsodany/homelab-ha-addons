@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 from .alerts import EVENTS, unknown_placeholders
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 
 class ConfigError(Exception):
@@ -51,8 +51,8 @@ class ExitFlowsCfg(_M):
 
 class DetectionCfg(_M):
     failure_threshold: int = Field(3, ge=1)          # consecutive bad status polls before the tunnel is declared down
-    probe_failure_threshold: int = Field(2, ge=1)    # consecutive bad exit-IP probes before the tunnel is declared down
-    probe_interval_seconds: int = Field(30, ge=5)
+    probe_failure_threshold: int = Field(3, ge=1)    # consecutive bad tunnel tests before the tunnel is declared down (a test that could not run counts for nothing)
+    probe_interval_seconds: int = Field(60, ge=5)
     blackhole: BlackholeCfg = BlackholeCfg()
     exit_flows: ExitFlowsCfg = ExitFlowsCfg()
 
@@ -79,11 +79,28 @@ class CanaryCfg(_M):
     settle_seconds: float = 6
 
 
+class SshCfg(_M):
+    """A read-only login to the UDM for the tunnel test (UniFi's API cannot send a ping or a request through a VPN client). Off unless filled in."""
+    host: str | None = None
+    user: str | None = None
+    password: SecretStr | None = None              # a key is safer: use key_file
+    key_file: str | None = None                    # path of the private key (never put the key text in a setting)
+    port: int = Field(22, ge=1, le=65535)
+    timeout_seconds: float = Field(15, gt=0)       # the whole test, connection included
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.host and self.user and (self.password or self.key_file))
+
+
 class ProbeCfg(_M):
     # direct: probe from this host's own egress (only valid when this host is routed through the VPN)
     # none:   status + throughput checks only
     # (canary / remote were removed: steering a test device through a tunnel means changing a routing policy, which is never done)
-    mode: Literal["direct", "none"] = "none"
+    mode: Literal["direct", "udm", "none"] = "none"   # udm: tested from the UDM over SSH (see `ssh`); it switches on by itself once `ssh` is filled in
+    ssh: SshCfg = SshCfg()
+    on_stop: Literal["keep", "direct"] = "keep"      # when the check stops a group and waits for you: keep it as it is, or switch its VPN off so the VLAN uses the normal internet
+    load_max: float = Field(4.0, gt=0, le=100)       # the UDM is not tested while its load is above this
     endpoints: list[ProbeEndpoint] = Field(default_factory=_default_endpoints)
     require: int = 1
     check_country: bool = True                     # geo-IP databases disagree on VPN ranges; false = only "works and is not the WAN IP"
@@ -110,8 +127,10 @@ class QuarantineCfg(_M):
 
 class SwitchingCfg(_M):
     connect_timeout_seconds: float = Field(40, ge=5)
-    min_hold_seconds: int = Field(60, ge=0)                  # minimum time between switches (hard failures bypass it)
-    max_switches_per_hour: int = Field(6, ge=1)
+    min_hold_seconds: int = Field(600, ge=0)                 # minimum time between switches (hard failures bypass it)
+    max_switches_per_hour: int = Field(3, ge=1)
+    max_switches_per_day: int = Field(6, ge=1)
+    attempt_gap_seconds: int = Field(120, ge=0)              # with the UDM test: time between two attempts to find a working tunnel (one candidate each)
     quarantine: QuarantineCfg = QuarantineCfg()
     on_exhausted: Literal["keep", "kill_switch"] = "keep"      # "kill_switch" is refused (see removed_settings): it changed a routing policy
 
@@ -119,7 +138,7 @@ class SwitchingCfg(_M):
 class FailbackCfg(_M):
     enabled: bool = True
     check_interval_seconds: int = Field(120, ge=10)
-    stable_seconds: int = Field(300, ge=0)
+    stable_seconds: int = Field(600, ge=0)
 
 
 class NetRef(_M):
@@ -454,6 +473,27 @@ def load_raw(text: str) -> dict[str, Any]:
     return back(raw)
 
 
+_UDM_ENV = {"UDM_SSH_HOST": "host", "UDM_SSH_USER": "user", "UDM_SSH_PASSWORD": "password", "UDM_SSH_KEY_FILE": "key_file"}
+
+
+def _overlay_udm(raw: dict[str, Any], env: dict[str, str]) -> None:
+    """The add-on's UDM options arrive as environment variables and win over the file, so an older config.yaml (without a `probe.ssh`
+    section) still gets them. An empty value changes nothing."""
+    probe = raw.get("probe")
+    if probe is None:
+        probe = raw["probe"] = {}
+    if not isinstance(probe, dict):
+        return
+    for var, field in _UDM_ENV.items():
+        if env.get(var):
+            ssh = probe.get("ssh")
+            if not isinstance(ssh, dict):
+                ssh = probe["ssh"] = {}
+            ssh[field] = env[var]
+    if env.get("UDM_ON_STOP"):
+        probe["on_stop"] = env["UDM_ON_STOP"]
+
+
 def parse_config(text: str, env: dict[str, str] | None = None) -> Config:
     safe, found = _protect(text)
     try:
@@ -462,7 +502,9 @@ def parse_config(text: str, env: dict[str, str] | None = None) -> Config:
         raise ConfigError(f"invalid YAML: {e}") from e
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a mapping")
-    raw = _restore(raw, found, dict(os.environ) if env is None else env)
+    environment = dict(os.environ) if env is None else env
+    raw = _restore(raw, found, environment)
+    _overlay_udm(raw, environment)
     errs = removed_settings(raw)
     if errs:
         raise ConfigError("\n".join(errs))

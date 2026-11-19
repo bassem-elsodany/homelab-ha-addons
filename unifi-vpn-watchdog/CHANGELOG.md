@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0
+
+A real test of every VPN, run on the UDM itself. UniFi only says "connected", which stays true while a tunnel passes nothing, and its API cannot send a ping or a request through a VPN client. With an SSH login to the UDM the add-on now does it once a minute and fixes a dead VPN by itself, with limits so it can never overload the UDM.
+
+- **The test:** once a minute the add-on opens one SSH connection to the UDM and runs a fixed, read-only script: four pings and one HTTPS request through every VPN client that is up, plus the load, the plain internet and whether UniFi just re-provisioned. A tunnel is OK, SLOW (some loss or a slow answer: one alert, nothing switched) or DEAD. A test that could not run is never a verdict.
+- **Off until you set it up:** fill `udm_ssh_host`, `udm_ssh_user` and a key (`udm_ssh_key_file`, a file in the add-on's config folder; a password works too but a key is safer) in the Configuration tab. Without them nothing changes. See DOCS.md.
+- **A dead VPN:** after 3 dead tests in a row the add-on switches to the next VPN in your order. A new VPN is tested before it gets any traffic; one candidate per attempt, at least 2 minutes between attempts.
+- **Limits (so the UDM is never overloaded):** the test is skipped while the UDM load is above 4, and SSH failures back off 1, 2, 4 ... 15 minutes. No switching while UniFi re-provisioned in the last minute, and nothing is changed when every VPN fails or the plain internet is down (one alert per 30 minutes). At least 10 minutes between switches, at most 3 switches or attempts per hour and 6 per day, on top of the 1.0.2 write budgets.
+- **Stop and ask:** when a limit is reached the group is paused and one critical alert says so. Nothing repeats until you resume the group, which also clears its attempt history and bans. `udm_on_stop`: `keep` (default) leaves the group as it is; `direct` switches the group's VPN clients off so its VLANs use the normal internet until you resume.
+- **New defaults for everyone** (calmer, because of the 2026-11-19 overload): `min_hold_seconds` 600 (was 60), `max_switches_per_hour` 3 (was 6), new `max_switches_per_day` 6, `failback.stable_seconds` 600 (was 300), `probe_failure_threshold` 3 (was 2), `probe_interval_seconds` 60 (was 30). A config.yaml that sets these keeps its own values. A failure UniFi itself reports (tunnel disconnected) still bypasses the minimum hold.
+- New alerts: `tunnel_slow`, `tunnel_recovered`, `check_hold`, `check_stopped`.
+
 ## 1.0.2
 
 Fixes a loop that slowed the whole network (every VLAN, VPN or not): UniFi re-provisions its entire network for each routing-policy or VPN-client write, and the add-on was making one every 15 seconds for hours.

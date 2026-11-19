@@ -67,7 +67,7 @@ class FakeUniFi:
         conns = {}
         for n in TUNNELS:
             i = tid(n)
-            tunnels[i] = parse_tunnel({"_id": i, "name": n, "enabled": i in self.enabled})
+            tunnels[i] = parse_tunnel({"_id": i, "name": n, "enabled": i in self.enabled, "ip_subnet": f"10.5.{10 + TUNNELS.index(n)}.2/24"})
             if i in self.enabled:
                 bad = i in self.dead
                 conns[i] = Connection(i, "CONNECTING" if bad else "CONNECTED", None if bad else "9.9.9.9",

@@ -20,7 +20,7 @@ from .refs import group_raw
 from .engine import Engine
 from .ha_mqtt import MqttPublisher
 from .notify import Notifier
-from .probe import Prober, TunnelTester
+from .probe import make_tester
 from .server import StatusServer
 from .state import StateStore
 from .unifi import UniFiClient
@@ -65,7 +65,7 @@ class App:
     def _build(self) -> Engine:
         cfg = self.cfg
         unifi = UniFiClient(cfg.unifi)
-        tester = TunnelTester(cfg.probe, unifi, Prober(cfg.probe), self.clock)
+        tester = make_tester(cfg.probe, unifi, self.clock, os.path.dirname(os.path.abspath(cfg.state_file)) if cfg.state_file else None)
         notifier = Notifier(cfg.notifications, self.clock, alerts=cfg.alerts)
         eng = Engine(cfg, unifi, tester, notifier, self.store, self.clock)
         if self.mqtt:
