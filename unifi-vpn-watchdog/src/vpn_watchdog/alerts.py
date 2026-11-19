@@ -67,6 +67,12 @@ EVENTS: dict[str, dict[str, Any]] = {
         "title": "VPN {group}: nothing changed",
         "message": "{reason}",
     },
+    "check_stopped": {
+        "when": "A switching limit was reached (too many switches or attempts in an hour or a day), so the group was paused. It needs you: fix the cause, then resume the group.",
+        "level": "critical", "enabled": True,
+        "title": "VPN {group}: stopped, needs you",
+        "message": "{reason}",
+    },
     "exhausted": {
         "when": "The active tunnel is down and every candidate failed or is paused after failing. Needs your attention.",
         "level": "critical", "enabled": True,

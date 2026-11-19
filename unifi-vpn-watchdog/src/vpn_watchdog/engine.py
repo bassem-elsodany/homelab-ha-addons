@@ -421,6 +421,10 @@ class Engine:
 
         on = [t for t in ladder if t.enabled]                        # the group's VPN clients that are switched on in UniFi
         if not on:
+            if gs.paused:
+                if not (gs.stopped or gs.last_decision.startswith("paused")):       # keep the reason a group was stopped or paused for
+                    gs.last_decision = "paused"
+                return
             if watch_only:
                 gs.last_decision, gs.healthy = f"no VPN client is switched on; {note}", None
                 return
@@ -444,7 +448,8 @@ class Engine:
                 log.warning("group %s: the VPN client in use changed outside the watchdog (%s -> %s); adopting", g.name, gs.current_id, cur_id)
             self._set_current(gs, cur_id)
         if gs.paused:
-            gs.last_decision = "paused"
+            if not gs.stopped:        # a group the watchdog stopped keeps saying why
+                gs.last_decision = "paused"
             self._maybe_rotate(g, st, gs, cur, ladder, None)       # the rotation job is its own job: it does not depend on failover being on
             return
 
@@ -590,6 +595,20 @@ class Engine:
                                f"{cur.name if cur else 'current'} is down and {tried} candidate(s) failed or are quarantined",
                                level="critical", key=g.name, group=g.name, tunnel=cur.name if cur else "", tried=tried)
         gs.last_decision = f"exhausted: {why}"
+
+    def _stop_and_ask(self, g: GroupCfg, gs: GroupState, reason: str) -> None:
+        """A switching limit was reached with the UDM test active: pause the group, say so once, and wait for you. With `probe.on_stop: direct` the group's
+        VPN clients are switched off too, so its VLANs use the normal internet; with `keep` (default) they stay as they are. Nothing repeats until you resume."""
+        gs.paused = gs.stopped = True
+        gs.last_decision = f"stopped: {reason}. Resume the group in the add-on to let it choose again."
+        self.store.touch()
+        msg = f"{reason}. Switching more will not fix it and keeps the UDM busy, so the group is paused until you resume it."
+        log.error("group %s: %s", g.name, msg)
+        self.notifier.emit("check_stopped", f"VPN {g.name}: stopped, needs you", msg, level="critical", key=f"{g.name}:stopped", group=g.name, reason=msg)
+        if self.cfg.probe.on_stop == "direct":
+            for t in self._pool(g, self.unifi.snapshot()):
+                if t.enabled and self._may_toggle_tunnels():
+                    self._toggle_tunnel(t.id, False)
 
     def _hold_off(self, g: GroupCfg, gs: GroupState, reason: str) -> None:
         """The cause is probably not one VPN (every VPN failed, the internet is down, the UDM is overloaded): change nothing and say so, at most every 30 minutes."""
@@ -814,13 +833,16 @@ class Engine:
         now = self.clock.now()
         recent = [t for t in gs.switches if now - t < 3600]
         day = [t for t in gs.switches if now - t < 86400]
-        reason = None
+        reason, cap = None, False
         if len(recent) >= st.switching.max_switches_per_hour:
-            reason = f"already switched {len(recent)}x in the last hour"
+            reason, cap = f"already switched {len(recent)}x in the last hour", True
         elif len(day) >= st.switching.max_switches_per_day:
-            reason = f"already switched {len(day)}x in the last day (limit {st.switching.max_switches_per_day})"
+            reason, cap = f"already switched {len(day)}x in the last day (limit {st.switching.max_switches_per_day})", True
         elif not hard and now - gs.last_switch_ts < st.switching.min_hold_seconds:
             reason = f"last switch was {now - gs.last_switch_ts:.0f}s ago (min hold {st.switching.min_hold_seconds}s)"
+        if reason and cap and getattr(self.tester, "one_candidate_per_attempt", False):
+            self._stop_and_ask(g, gs, reason)           # a limit was reached: switching more will not fix it and keeps the UDM busy
+            return False
         if reason:
             gs.last_decision = f"switch blocked: {reason}"
             if now - self._blocked_notified.get(g.name, -1e12) > 600:
@@ -874,6 +896,11 @@ class Engine:
             log.info("group %s paused", g.name)
         elif kind == "resume":
             gs.paused = False
+            if gs.stopped:          # you say it is fixed: start clean (the limits and bans came from the failure)
+                gs.stopped, gs.switches, gs.last_attempt_ts = False, [], 0.0
+                for t in self._pool(g, snap):
+                    ts = self.store.tunnel(t.id)
+                    ts.quarantined_until, ts.fail_streak = 0.0, 0
             self.store.touch()
             log.info("group %s resumed", g.name)
         elif kind in ("rotation-pause", "rotation-resume"):

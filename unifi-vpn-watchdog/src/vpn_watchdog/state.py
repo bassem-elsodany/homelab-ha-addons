@@ -29,6 +29,7 @@ class GroupState:
     last_attempt_ts: float = 0.0     # the last attempt to find a working tunnel (the UDM test spaces attempts out)
     switches: list[float] = field(default_factory=list)
     paused: bool = False
+    stopped: bool = False            # paused by the watchdog itself because a switching limit was reached (resume clears the history)
     status_failures: int = 0
     probe_failures: int = 0
     last_probe_ts: float = 0.0
