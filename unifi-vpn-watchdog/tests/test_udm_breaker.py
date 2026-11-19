@@ -68,3 +68,15 @@ def test_counters_and_bans_survive_a_restart(make_engine, tmp_path):
     new = Engine(eng.cfg, un, eng.tester, notes, again, clock)
     rounds(new, clock, 8)
     assert new.store.group("g1").paused and len(enables(un)) == 3           # the new process does not start over
+
+
+def test_a_healthy_group_is_never_stopped_just_because_failback_checked_the_limits(make_engine):
+    eng, un, notes, clock = engine(make_engine, ORDER, Gate())
+    g = eng.cfg.groups[0]
+    st = eng.cfg.settings_for(g)
+    now = clock.now()
+    gs(eng).switches = [now - 100 * i for i in range(1, 4)]                # the hourly limit is used up
+    assert eng._rate_ok(g, st, gs(eng), hard=False) is False               # failback asks: a plain "no"
+    assert not gs(eng).paused and "check_stopped" not in notes.kinds()
+    assert eng._rate_ok(g, st, gs(eng), hard=False, stop_on_cap=True) is False       # a real failover that hits the limit stops the group
+    assert gs(eng).paused and notes.kinds().count("check_stopped") == 1

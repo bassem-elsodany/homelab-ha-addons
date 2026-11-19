@@ -141,6 +141,7 @@ class UdmTester(TunnelTester):
         self._last: UdmReading | None = None
         self._fails = 0
         self._retry_at = 0.0
+        self._verdict_at: dict[str, float] = {}      # tunnel address -> the reading its last verdict came from
 
     @property
     def enabled(self) -> bool:
@@ -181,9 +182,11 @@ class UdmTester(TunnelTester):
         r = self.reading(fresh=pre)       # a candidate was not up in the cached reading, so a pre-test always looks again
         if r is None or r.load > self.cfg.load_max:
             return None
-        p = r.probes.get((tunnel.subnet or "").split("/")[0])
-        if p is None:
+        ip = (tunnel.subnet or "").split("/")[0]
+        p = r.probes.get(ip)
+        if p is None or self._verdict_at.get(ip) == r.at:        # not tested, or this very measurement was already counted (no new evidence)
             return None
+        self._verdict_at[ip] = r.at
         if p.state == "DEAD":
             return ProbeResult(False, f"dead: {p.http or 'no'} HTTPS answer, {p.loss:.0f}% ping loss (tested from the UDM)")
         if p.state == "SLOW":

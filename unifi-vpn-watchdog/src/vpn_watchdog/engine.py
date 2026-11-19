@@ -560,7 +560,7 @@ class Engine:
             if self.clock.now() - gs.last_attempt_ts < st.switching.attempt_gap_seconds:
                 gs.last_decision = f"waiting {st.switching.attempt_gap_seconds}s between attempts"
                 return
-        if not self._rate_ok(g, st, gs, hard):
+        if not self._rate_ok(g, st, gs, hard, stop_on_cap=True):
             return
         now = self.clock.now()
         if udm:
@@ -829,7 +829,7 @@ class Engine:
         self.store.touch()
         log.info("tunnel %s quarantined for %ds: %s", t.name, secs, reason)
 
-    def _rate_ok(self, g: GroupCfg, st: GroupSettings, gs: GroupState, hard: bool) -> bool:
+    def _rate_ok(self, g: GroupCfg, st: GroupSettings, gs: GroupState, hard: bool, stop_on_cap: bool = False) -> bool:
         now = self.clock.now()
         recent = [t for t in gs.switches if now - t < 3600]
         day = [t for t in gs.switches if now - t < 86400]
@@ -840,7 +840,7 @@ class Engine:
             reason, cap = f"already switched {len(day)}x in the last day (limit {st.switching.max_switches_per_day})", True
         elif not hard and now - gs.last_switch_ts < st.switching.min_hold_seconds:
             reason = f"last switch was {now - gs.last_switch_ts:.0f}s ago (min hold {st.switching.min_hold_seconds}s)"
-        if reason and cap and getattr(self.tester, "one_candidate_per_attempt", False):
+        if reason and cap and stop_on_cap and getattr(self.tester, "one_candidate_per_attempt", False):
             self._stop_and_ask(g, gs, reason)           # a limit was reached: switching more will not fix it and keeps the UDM busy
             return False
         if reason:

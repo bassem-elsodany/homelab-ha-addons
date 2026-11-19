@@ -153,3 +153,26 @@ def test_can_pretest_and_make_tester_picks_the_right_class():
     cfg = ProbeCfg(ssh=SshCfg(host="udm.example", user="watchdog", key_file="udm_ssh_key"))
     assert isinstance(make_tester(cfg, None, FakeClock(), None), UdmTester)
     assert not isinstance(make_tester(ProbeCfg(), None, FakeClock(), None), UdmTester)
+
+
+def test_one_reading_gives_one_verdict_per_tunnel_even_when_asked_again():
+    t, clock = make(FakeSsh(out(LONDON)))
+    assert t.test(tun("10.5.23.2"), SNAP, pre=False).ok is False
+    clock.t += 15                                                                    # a short probe interval asks again within the cache time
+    assert t.test(tun("10.5.23.2"), SNAP, pre=False) is None                         # same measurement: no new evidence
+    clock.t += 50
+    assert t.test(tun("10.5.23.2"), SNAP, pre=False).ok is False                     # a new measurement counts again
+
+
+def test_an_old_reading_kept_through_an_ssh_failure_is_not_counted_a_second_time():
+    t, clock = make(FakeSsh(out(LONDON), UdmError("down")))
+    assert t.test(tun("10.5.23.2"), SNAP, pre=False).ok is False
+    clock.t += 60
+    assert t.test(tun("10.5.23.2"), SNAP, pre=False) is None                         # the test could not run: nothing new, the old DEAD is not re-used
+
+
+def test_a_pre_test_reading_is_not_counted_again_as_a_regular_test():
+    t, clock = make(FakeSsh(out(ROME)))
+    assert t.test(tun("10.5.13.2"), SNAP, pre=True).ok is True
+    clock.t += 10
+    assert t.test(tun("10.5.13.2"), SNAP, pre=False) is None
