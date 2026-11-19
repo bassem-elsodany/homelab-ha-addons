@@ -39,11 +39,22 @@ class BlackholeCfg(_M):
     samples: int = Field(6, ge=1)             # ... and received exactly nothing for this many polls in a row
 
 
+class ExitFlowsCfg(_M):
+    """A tunnel UniFi calls CONNECTED can still pass nothing (2026-11-19: London 2035 and 2110). UniFi's traffic-flow log (last 5 minutes) shows it: many flows
+    leave through the tunnel, most get nothing back, and far less comes in than goes out. Needs real traffic: an idle tunnel is never judged."""
+    enabled: bool = True
+    min_flows: int = Field(20, ge=1)                 # fewer flows than this is too little evidence
+    min_tx_bytes: int = Field(100_000, ge=0)         # ... and at least this much was sent
+    unanswered_share: float = Field(0.5, ge=0, le=1)  # at least this share of the flows got nothing back ...
+    max_rx_tx_ratio: float = Field(0.35, ge=0)       # ... AND less than this much came in per byte sent (busy, healthy tunnels fail one of the two)
+
+
 class DetectionCfg(_M):
     failure_threshold: int = Field(3, ge=1)          # consecutive bad status polls before the tunnel is declared down
     probe_failure_threshold: int = Field(2, ge=1)    # consecutive bad exit-IP probes before the tunnel is declared down
     probe_interval_seconds: int = Field(30, ge=5)
     blackhole: BlackholeCfg = BlackholeCfg()
+    exit_flows: ExitFlowsCfg = ExitFlowsCfg()
 
 
 class ProbeEndpoint(_M):

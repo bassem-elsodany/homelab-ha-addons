@@ -36,6 +36,14 @@ class Health:
 
 
 class Engine:
+    # UniFi re-provisions the whole network (every VLAN, VPN or not) for each routing-policy write, so the watchdog is bounded:
+    ROUTE_WRITES_MAX = 20            # routing-policy writes allowed per window, over all groups
+    ROUTE_WRITES_WINDOW = 600.0
+    ROUTE_GUARD_PAUSE = 1800.0       # after the budget is spent, no routing writes for this long
+    TUNNEL_TOGGLES_MAX = 12          # VPN clients switched on or off per window (each one also re-provisions UniFi)
+    TUNNEL_TOGGLES_WINDOW = 600.0
+    ORDER_TRIES_MAX = 2              # times one policy is re-created to get it below the device policies, before giving up
+
     def __init__(
         self,
         cfg: Config,
@@ -70,6 +78,13 @@ class Engine:
         self._dev_owners: dict[str, str] = {}       # device MAC -> the group that routes it (a device belongs to one group)
         self._orphan_seen: dict[str, int] = {}       # policy id -> consecutive cycles its group has been missing from the config
         self._route_fail: dict[str, float] = {}     # group -> when its routing last failed to apply (retried after a pause, not every cycle)
+        self._route_writes: deque[float] = deque()        # when the last routing-policy writes happened (the write budget)
+        self._route_guard_until = 0.0
+        self._tunnel_toggles: deque[float] = deque()
+        self._toggle_guard_until = 0.0
+        self._disabled_by_me: set[str] = set()            # VPN clients the watchdog switched off itself (any other client that is off was stopped by you)
+        self._order_tries: dict[str, int] = {}            # policy name -> times it was re-created to move it below the device policies
+        self._order_blocked: set[str] = set()             # policies given up on (UniFi does not put the copy where the watchdog needs it)
         self._busy = False
         self._blocked_notified: dict[str, float] = {}
         self.listeners: list = []   # callables(status_dict) invoked after each tick (MQTT publisher)
@@ -190,7 +205,9 @@ class Engine:
                 continue
             since = self._warm_since.setdefault(t.id, now)
             if not t.enabled:
-                self.unifi.set_tunnel_enabled(t.id, True)
+                if not self._may_toggle_tunnels():
+                    break
+                self._toggle_tunnel(t.id, True)
                 self._warm_since[t.id] = now
             elif now - since > st.switching.connect_timeout_seconds * 3:
                 self._quarantine(t, "did not connect as a standby", st)       # left out of `keep`: it is switched off and the next one takes its place
@@ -234,6 +251,50 @@ class Engine:
         except UniFiError as e:
             self._record("routing_failed", f"group {g.name}: could not change the policy: {e}", "warning")
 
+    def _budget(self, what: str, writes: deque, window: float, maximum: int, pause: float, until_attr: str) -> bool:
+        """Every write to UniFi (a routing policy, a VPN client on/off) makes it re-provision its whole network, so a burst of them (a loop, a
+        flapping tunnel) is stopped, reported, and left alone for a while instead of being repeated every cycle."""
+        now = self.clock.now()
+        if now < getattr(self, until_attr):
+            return False
+        while writes and now - writes[0] > window:
+            writes.popleft()
+        if len(writes) >= maximum:
+            setattr(self, until_attr, now + pause)
+            msg = (f"{len(writes)} {what} in {int(window // 60)} minutes: the watchdog stops making them for {int(pause // 60)} minutes "
+                   f"so UniFi is not re-provisioned over and over (every VLAN slows down while it is)")
+            log.error("write budget spent: %s", msg)
+            self.notifier.emit("udm_guard", "VPN watchdog: changes to UniFi paused", msg, level="critical", key=f"udm_guard:{what}", reason=msg)
+            return False
+        return True
+
+    def _may_write_routes(self) -> bool:
+        return self._budget("routing-policy writes", self._route_writes, self.ROUTE_WRITES_WINDOW, self.ROUTE_WRITES_MAX,
+                            self.ROUTE_GUARD_PAUSE, "_route_guard_until")
+
+    def _may_toggle_tunnels(self) -> bool:
+        return self._budget("VPN client switches", self._tunnel_toggles, self.TUNNEL_TOGGLES_WINDOW, self.TUNNEL_TOGGLES_MAX,
+                            self.ROUTE_GUARD_PAUSE, "_toggle_guard_until")
+
+    def _toggle_tunnel(self, tunnel_id: str, enabled: bool) -> None:
+        """The only place the engine switches a VPN client on or off (counted against the budget, and remembered so a client you stopped
+        yourself is not mistaken for one the watchdog stopped)."""
+        self.unifi.set_tunnel_enabled(tunnel_id, enabled)
+        self._tunnel_toggles.append(self.clock.now())
+        (self._disabled_by_me.discard if enabled else self._disabled_by_me.add)(tunnel_id)
+
+    def _guard_status(self, now: float) -> dict[str, Any]:
+        """How much the watchdog has written to UniFi lately (each write re-provisions the UDM) and whether a budget has paused it."""
+        def n(writes: deque, window: float) -> int:
+            return sum(1 for t in writes if now - t <= window)
+        return {"route_writes": n(self._route_writes, self.ROUTE_WRITES_WINDOW), "route_writes_max": self.ROUTE_WRITES_MAX,
+                "tunnel_switches": n(self._tunnel_toggles, self.TUNNEL_TOGGLES_WINDOW), "tunnel_switches_max": self.TUNNEL_TOGGLES_MAX,
+                "window_seconds": int(self.ROUTE_WRITES_WINDOW),
+                "paused_routing": now < self._route_guard_until, "paused_tunnels": now < self._toggle_guard_until}
+
+    def _count_route_write(self) -> None:
+        self._route_writes.append(self.clock.now())
+
     def _reconcile_routing(self, snap: Snapshot) -> bool:
         """Groups with routing management on: keep the watchdog's own policies pointed at the active client. True when it wrote."""
         wrote = False
@@ -243,6 +304,8 @@ class Engine:
             if self.clock.now() - self._route_fail.get(g.name, -1e9) < 300:
                 continue
             for a in self._routing_plan(g, snap):
+                if not self._may_write_routes():
+                    return wrote
                 try:
                     if a.kind == "create":
                         self.unifi.create_own_route(routing.new_route_body(a))
@@ -250,6 +313,7 @@ class Engine:
                         self.unifi.update_own_route(a.route_id, a.tunnel_id, True, routing.device_target(a.macs) if a.macs else None, a.description)
                     else:
                         self.unifi.delete_own_route(a.route_id)
+                    self._count_route_write()
                 except UniFiError as e:
                     self._route_fail[g.name] = self.clock.now()
                     self._record("routing_failed", f"group {g.name}: could not {a.text}: {e}", "warning")
@@ -268,17 +332,42 @@ class Engine:
         if self.clock.now() - self._route_fail.get("*order", -1e9) < 300:
             return False
         wrote = False
-        for r in routing.order_fix(snap):
+        bad = routing.order_fix(snap)
+        gave_up: list[str] = []
+        names = {routing.key(r.description) for r in bad}
+        self._order_tries = {k: n for k, n in self._order_tries.items() if k in names}        # a policy that is in order now starts fresh
+        self._order_blocked &= names
+        for r in bad:
+            name = routing.key(r.description)
+            if name in self._order_blocked:
+                continue
+            if self._order_tries.get(name, 0) >= self.ORDER_TRIES_MAX:
+                # UniFi, not the watchdog, picks where a new policy lands in its list (it is not always the end), so re-creating a policy
+                # cannot be forced to work. Every copy re-provisions the whole network: stop, say so, and leave the order to the user.
+                self._order_blocked.add(name)
+                gave_up.append(name)
+                continue
+            if not self._may_write_routes():
+                break
             try:
                 if not routing.has_twin_below(snap, r):
                     self.unifi.create_own_route(routing.clone_body(r))
+                    self._count_route_write()
                 self.unifi.delete_own_route(r.id)
+                self._count_route_write()
+                self._order_tries[name] = self._order_tries.get(name, 0) + 1
             except UniFiError as e:
                 self._route_fail["*order"] = self.clock.now()
                 self._record("routing_failed", f"could not move the policy \"{r.description}\" below the device policies: {e}", "warning")
                 break
             wrote = True
             self._record("routing_changed", f"moved the policy \"{r.description}\" below the device policies (a device policy must come first in UniFi's list)")
+        if gave_up:
+            msg = ("UniFi keeps putting the new copy of " + ", ".join(f"\"{n}\"" for n in gave_up) + " above the device policies, and the watchdog cannot "
+                   "choose where UniFi puts a policy. It stopped re-creating them so UniFi is not re-provisioned over and over: in UniFi's policy table "
+                   "move them below the device policy (or remove the group's devices)")
+            log.error("%s", msg)
+            self.notifier.emit("udm_guard", "VPN watchdog: policy order not fixable", msg, level="warning", key="order", reason=msg)
         return wrote
 
     def _clean_orphans(self, snap: Snapshot) -> bool:
@@ -291,8 +380,11 @@ class Engine:
         for i, r in found.items():
             if self._orphan_seen[i] < 3 or self.clock.now() - self._route_fail.get("*orphans", -1e9) < 300:
                 continue
+            if not self._may_write_routes():
+                break
             try:
                 self.unifi.delete_own_route(i)
+                self._count_route_write()
             except UniFiError as e:
                 self._route_fail["*orphans"] = self.clock.now()
                 self._record("routing_failed", f"could not delete the orphaned policy \"{r.description}\": {e}", "warning")
@@ -328,6 +420,15 @@ class Engine:
         if not on:
             if watch_only:
                 gs.last_decision, gs.healthy = f"no VPN client is switched on; {note}", None
+                return
+            if gs.current_id and gs.current_id in snap.tunnels and gs.current_id not in self._disabled_by_me:
+                # the client in use was switched off, and not by the watchdog: you stopped it. Switching one back on would fight you
+                # (and every switch re-provisions the whole UniFi network), so the group pauses until you resume it.
+                gs.paused = True
+                gs.last_decision = "paused: every VPN client was switched off outside the watchdog (resume the group to let it choose one again)"
+                self._record("paused", f"group {g.name}: {gs.last_decision}", "warning")
+                log.warning("group %s: %s", g.name, gs.last_decision)
+                self.store.touch()
                 return
             gs.last_decision = "none of this group's VPN clients is switched on; choosing one"
             self._provision(g, st, gs, ladder, snap)
@@ -399,6 +500,11 @@ class Engine:
             dq.append((conn.rx_bps or 0, conn.tx_bps or 0))
             if dq.maxlen == len(dq) and all(rx == 0 and tx >= bh.min_tx_bps for rx, tx in dq):
                 reasons.append(f"black hole: tx>={bh.min_tx_bps}bps but rx=0 for {bh.samples} polls")
+        fc = st.detection.exit_flows
+        fs = snap.flows.get(cur.id)
+        if not reasons and fc.enabled and fs is not None and fs.flows >= fc.min_flows and fs.tx >= fc.min_tx_bytes:
+            if fs.zero_rx / fs.flows >= fc.unanswered_share and fs.rx < fc.max_rx_tx_ratio * fs.tx:
+                reasons.append(f"dead exit: {fs.zero_rx} of {fs.flows} flows got no answer, {fs.rx} bytes in for {fs.tx} out (last 5 minutes)")
         if reasons:
             gs.status_failures += 1
             return Health(False, False, reasons)
@@ -476,7 +582,9 @@ class Engine:
         if t is None:
             return False, "tunnel vanished"
         if not t.enabled:
-            self.unifi.set_tunnel_enabled(cand.id, True)
+            if not self._may_toggle_tunnels():
+                return False, "paused: too many VPN client switches, waiting before trying another"
+            self._toggle_tunnel(cand.id, True)
         waited = 0.0
         while waited <= st.switching.connect_timeout_seconds:
             conn = self.unifi.snapshot().connections.get(cand.id)
@@ -642,10 +750,14 @@ class Engine:
         for tid in managed:
             t = snap.tunnels[tid]
             if t.enabled and tid not in keep and tid not in in_use:
-                self.unifi.set_tunnel_enabled(tid, False)
+                if not self._may_toggle_tunnels():
+                    break
+                self._toggle_tunnel(tid, False)
 
     # ------------------------------------------------------------------ helpers
     def _quarantine(self, t: Tunnel, reason: str, st: GroupSettings) -> None:
+        if "paused: too many" in reason:            # the write budget stopped the attempt: nothing is wrong with the tunnel
+            return
         ts = self.store.tunnel(t.id)
         ts.fail_streak += 1
         q = st.switching.quarantine
@@ -1046,6 +1158,7 @@ class Engine:
             "events": sorted(list(getattr(self.notifier, "history", []))[:60] + list(getattr(self.notifier, "checks", [])), key=lambda e: -e["ts"])[:100],
             "interval_seconds": self.cfg.interval_seconds,
             "version": __version__,
+            "guard": self._guard_status(now),
         }
         with self._lock:
             self._status = status

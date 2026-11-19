@@ -5,9 +5,10 @@ sends the VLAN through the group's active VPN client; for the devices a group ha
 `vpnwd: <group> › devices`. A failover only moves those policies to the new client. The watchdog never creates, edits or deletes
 any other policy: a policy is its own only if its name starts with PREFIX (the UniFi client refuses every other write).
 
-UniFi uses the first live policy in its list that covers a device, and a new policy always lands at the end. So a device policy would
-lose against a VLAN policy created earlier: `order_fix` finds the watchdog's VLAN policies that sit above one of its device policies,
-so that they can be created again (which puts them at the end) before the old ones are deleted."""
+UniFi uses the first live policy in its list that covers a device. So a device policy would lose against a VLAN policy that sits above
+it: `order_fix` finds the watchdog's VLAN policies above one of its device policies so that they can be created again before the old ones
+are deleted. UniFi decides where a new policy lands (usually the end, but NOT always: 2026-11-19 it kept landing above the device policy),
+so the engine tries this at most ORDER_TRIES_MAX times per policy and then asks you to move it; every write re-provisions the UDM."""
 from __future__ import annotations
 
 import re

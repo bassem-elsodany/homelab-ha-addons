@@ -46,6 +46,7 @@ class FakeUniFi:
         self.routes: list[Route] = []
         self.clients: dict = {}        # online devices: mac -> {name, ip, network_id, ...}
         self.known: dict = {}          # every known device (the device picker)
+        self.flows: dict = {}          # tunnel id -> FlowStat (what the traffic-flow log says about each tunnel)
         if with_policies:
             for n in TUNNELS:
                 self.routes.append(self._mk(f"route-{n}", n, n == active))
@@ -72,7 +73,7 @@ class FakeUniFi:
                 conns[i] = Connection(i, "CONNECTING" if bad else "CONNECTED", None if bad else "9.9.9.9",
                                       None if bad else (0 if i in self.muted else 5000), None if bad else 6000)
         info = {i: {"name": n, "vlan": None, "subnet": None, "purpose": "corporate"} for i, n in NETS.items()}
-        return Snapshot(tunnels, conns, list(self.routes), dict(NETS), "92.0.0.1", info, dict(self.clients), dict(self.known))
+        return Snapshot(tunnels, conns, list(self.routes), dict(NETS), "92.0.0.1", info, dict(self.clients), dict(self.known), dict(self.flows))
 
     def create_own_route(self, body):
         assert body["description"].startswith("vpnwd:")
