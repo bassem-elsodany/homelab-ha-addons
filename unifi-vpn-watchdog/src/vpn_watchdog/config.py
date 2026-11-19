@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import yaml
 from .alerts import EVENTS, unknown_placeholders
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 
 class ConfigError(Exception):
@@ -79,11 +79,28 @@ class CanaryCfg(_M):
     settle_seconds: float = 6
 
 
+class SshCfg(_M):
+    """A read-only login to the UDM for the tunnel test (UniFi's API cannot send a ping or a request through a VPN client). Off unless filled in."""
+    host: str | None = None
+    user: str | None = None
+    password: SecretStr | None = None              # a key is safer: use key_file
+    key_file: str | None = None                    # path of the private key (never put the key text in a setting)
+    port: int = Field(22, ge=1, le=65535)
+    timeout_seconds: float = Field(15, gt=0)       # the whole test, connection included
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.host and self.user and (self.password or self.key_file))
+
+
 class ProbeCfg(_M):
     # direct: probe from this host's own egress (only valid when this host is routed through the VPN)
     # none:   status + throughput checks only
     # (canary / remote were removed: steering a test device through a tunnel means changing a routing policy, which is never done)
-    mode: Literal["direct", "none"] = "none"
+    mode: Literal["direct", "udm", "none"] = "none"   # udm: tested from the UDM over SSH (see `ssh`); it switches on by itself once `ssh` is filled in
+    ssh: SshCfg = SshCfg()
+    on_stop: Literal["keep", "direct"] = "keep"      # when the check stops a group and waits for you: keep it as it is, or switch its VPN off so the VLAN uses the normal internet
+    load_max: float = Field(4.0, gt=0, le=100)       # the UDM is not tested while its load is above this
     endpoints: list[ProbeEndpoint] = Field(default_factory=_default_endpoints)
     require: int = 1
     check_country: bool = True                     # geo-IP databases disagree on VPN ranges; false = only "works and is not the WAN IP"

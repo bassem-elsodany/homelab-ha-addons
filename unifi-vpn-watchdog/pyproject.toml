@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.6",
     "PyYAML>=6.0",
     "paho-mqtt>=2.0",
+    "paramiko>=3.4",
 ]
 
 [project.optional-dependencies]

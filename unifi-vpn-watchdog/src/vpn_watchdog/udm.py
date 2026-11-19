@@ -5,10 +5,22 @@ and the only value formatted in is the load limit (a validated number). The outp
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import math
+import os
 import re
+import threading
+from typing import Any, Callable
 
+from .config import SshCfg
 from .models import TunnelProbe, UdmReading
+
+log = logging.getLogger("vpn_watchdog.udm")
+
+
+class UdmError(Exception):
+    """The UDM could not be reached or answered badly. The message never contains a password."""
 
 _SCRIPT = r"""
 l=$(cut -d" " -f1 /proc/loadavg)
@@ -71,3 +83,90 @@ def parse_reading(output: str, now: float) -> UdmReading:
                 iface, ip.strip(), float(loss.group(1)) if loss else 100.0, float(rtt.group(1)) if rtt else None,
                 int(code) if code.isdigit() else 0, _number(secs, 6.0))
     return UdmReading(probes, load, wan_ok, reprov, now)
+
+
+class _ParamikoClient:
+    """The real SSH client (paramiko is only imported when a connection is really made)."""
+
+    def __init__(self) -> None:
+        self._c: Any = None
+
+    def connect(self, host: str, port: int, user: str, password: str | None, key_file: str | None, timeout: float) -> None:
+        import paramiko
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())        # the key is pinned by UdmSsh before anything runs
+        c.connect(host, port=port, username=user, password=password or None, key_filename=key_file or None, timeout=timeout,
+                  banner_timeout=timeout, auth_timeout=timeout, allow_agent=False, look_for_keys=False)
+        self._c = c
+
+    def server_key_fingerprint(self) -> str:
+        key = self._c.get_transport().get_remote_server_key()
+        return f"{key.get_name()} {hashlib.sha256(key.asbytes()).hexdigest()}"
+
+    def exec(self, script: str, timeout: float) -> tuple[str, int]:
+        _, stdout, _ = self._c.exec_command(script, timeout=timeout)
+        out = stdout.read().decode("utf-8", "replace")
+        return out, stdout.channel.recv_exit_status()
+
+    def close(self) -> None:
+        if self._c is not None:
+            self._c.close()
+
+
+class UdmSsh:
+    """Runs one fixed script on the UDM and returns what it printed. One connection per call, closed afterwards, a hard time limit, and the
+    UDM's host key is remembered on first use and refused if it ever changes (nothing runs on a host that does not match)."""
+
+    def __init__(self, cfg: SshCfg, host_key_file: str | None = None, client_factory: Callable[[], Any] | None = None):
+        self.cfg = cfg
+        self.host_key_file = host_key_file
+        self._factory = client_factory or _ParamikoClient
+
+    def _clean(self, text: str) -> str:
+        secret = self.cfg.password.get_secret_value() if self.cfg.password else ""
+        return text.replace(secret, "***") if secret else text
+
+    def _check_host_key(self, fingerprint: str) -> None:
+        if not self.host_key_file:
+            return
+        try:
+            known = open(self.host_key_file).read().strip()
+        except OSError:
+            known = ""
+        if not known:
+            os.makedirs(os.path.dirname(self.host_key_file) or ".", exist_ok=True)
+            with open(self.host_key_file, "w") as f:
+                f.write(fingerprint + "\n")
+            log.info("remembered the UDM's SSH host key")
+        elif known != fingerprint:
+            raise UdmError("the UDM's SSH host key changed: refusing to run anything (delete the remembered key file if you replaced the UDM)")
+
+    def run(self, script: str) -> str:
+        c, client = self.cfg, self._factory()
+        done: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                client.connect(c.host, c.port, c.user, c.password.get_secret_value() if c.password else None, c.key_file, c.timeout_seconds)
+                self._check_host_key(client.server_key_fingerprint())
+                done["out"], done["rc"] = client.exec(script, c.timeout_seconds)
+            except BaseException as e:      # noqa: BLE001 - reported below, with the secret removed
+                done["err"] = e
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(c.timeout_seconds)
+        try:
+            client.close()
+        except Exception:       # noqa: BLE001
+            pass
+        if t.is_alive():
+            raise UdmError(f"the UDM did not answer within the {c.timeout_seconds:g}s time limit")
+        err = done.get("err")
+        if err is not None:
+            if isinstance(err, UdmError):
+                raise UdmError(str(err)) from None
+            raise UdmError(self._clean(f"ssh to the UDM failed: {type(err).__name__}: {err}")) from None
+        if done.get("rc") != 0:
+            raise UdmError(f"the test script on the UDM exited with {done.get('rc')}")
+        return done["out"]
