@@ -22,10 +22,11 @@ from typing import Any
 import httpx
 
 from .config import UnifiCfg
-from .models import Connection, Route, Snapshot, parse_tunnel
+from .models import Connection, FlowStat, Route, Snapshot, parse_tunnel
 from .routing import PREFIX
 
 log = logging.getLogger("vpn_watchdog.unifi")
+FLOW_WINDOW_SECONDS = 300
 
 
 class UniFiError(Exception):
@@ -40,6 +41,7 @@ class UniFiClient:
     ):
         self.cfg = cfg
         self._known_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+        self._flow_cache: tuple[float, dict[str, FlowStat]] | None = None
         self._http = httpx.Client(
             base_url=f"{cfg.url.rstrip('/')}/proxy/network",
             headers={"X-API-Key": cfg.api_key},
@@ -108,7 +110,33 @@ class UniFiClient:
             if c.get("network_id")
         }
         routes = [self._parse_route(r) for r in routes_raw]
-        return Snapshot(tunnels, connections, routes, networks, self._wan_ip(), network_info, self._clients(), self._known())
+        return Snapshot(tunnels, connections, routes, networks, self._wan_ip(), network_info, self._clients(), self._known(), self._flows(set(tunnels)))
+
+    def _flows(self, tunnel_ids: set[str]) -> dict[str, FlowStat]:
+        """Per VPN client: how many of the flows of the last few minutes left through it, how many got nothing back, bytes out and in.
+        UniFi's flow log (newest first, one page) is read at most every 30 seconds. Failure is not fatal: no evidence, no judgement."""
+        if self._flow_cache and time.time() - self._flow_cache[0] < 30:
+            return self._flow_cache[1]
+        now_ms = int(time.time() * 1000)
+        body = {"timestampFrom": now_ms - FLOW_WINDOW_SECONDS * 1000, "timestampTo": now_ms, "pageNumber": 0, "pageSize": 1000}
+        try:
+            data = (self._request("POST", self._v2("traffic-flows"), json=body) or {}).get("data", [])
+        except UniFiError as e:
+            log.debug("could not read the traffic flows: %s", e)
+            return self._flow_cache[1] if self._flow_cache and time.time() - self._flow_cache[0] < 120 else {}
+        out: dict[str, FlowStat] = {}
+        for f in data:
+            nid = (f.get("out") or {}).get("network_id")
+            if nid not in tunnel_ids:
+                continue
+            td = f.get("traffic_data") or {}
+            st = out.setdefault(nid, FlowStat())
+            st.flows += 1
+            st.tx += int(td.get("bytes_tx") or 0)
+            st.rx += int(td.get("bytes_rx") or 0)
+            st.zero_rx += 0 if (td.get("bytes_rx") or 0) else 1
+        self._flow_cache = (time.time(), out)
+        return out
 
     def _known(self) -> dict[str, dict[str, Any]]:
         """Every device UniFi has seen (for picking a device in a group), read at most every two minutes. Failure is not fatal."""

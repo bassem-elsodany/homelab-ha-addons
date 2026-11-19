@@ -16,6 +16,7 @@ detection:
   probe_failure_threshold: 2      # bad exit-IP probes in a row
   probe_interval_seconds: 30
   blackhole: {enabled: true, min_tx_bps: 2000, samples: 6}   # CONNECTED but receiving nothing
+  exit_flows: {enabled: true, min_flows: 20, min_tx_bytes: 100000, unanswered_share: 0.5, max_rx_tx_ratio: 0.35}   # CONNECTED but the traffic-flow log shows no answers
 
 probe:
   mode: none                      # none | direct  (see README: "Probe modes")

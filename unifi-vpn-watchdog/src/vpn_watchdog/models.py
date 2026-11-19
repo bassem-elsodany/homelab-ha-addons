@@ -52,6 +52,15 @@ class Route:
 
 
 @dataclass
+class FlowStat:
+    """What UniFi's traffic-flow log says about the flows that left through one VPN client in the last few minutes."""
+    flows: int = 0
+    zero_rx: int = 0       # flows that received nothing back
+    tx: int = 0            # bytes sent
+    rx: int = 0            # bytes received
+
+
+@dataclass
 class Snapshot:
     tunnels: dict[str, Tunnel]
     connections: dict[str, Connection]
@@ -61,6 +70,7 @@ class Snapshot:
     network_info: dict[str, dict[str, Any]] = field(default_factory=dict)   # id -> {name, vlan, subnet, purpose}
     clients: dict[str, dict[str, Any]] = field(default_factory=dict)        # mac -> {name, ip, network}
     known: dict[str, dict[str, Any]] = field(default_factory=dict)          # every device UniFi knows, online or not: mac -> {name, ip, network, network_id}
+    flows: dict[str, FlowStat] = field(default_factory=dict)                # VPN client id -> what its recent flows show (empty when unknown)
 
     def tunnel_by_ref(self, ref: str) -> Tunnel | None:
         """A tunnel by its UniFi id, or (for a caller that only has a name) by its name."""

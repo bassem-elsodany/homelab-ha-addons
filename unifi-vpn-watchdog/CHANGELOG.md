@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2
+
+Fixes a loop that slowed the whole network (every VLAN, VPN or not): UniFi re-provisions its entire network for each routing-policy or VPN-client write, and the add-on was making one every 15 seconds for hours.
+
+- **The loop:** when a group has devices, the add-on re-created its VLAN policies so they would sit below the device policy. It assumed UniFi puts a new policy at the end of its list; UniFi does not always do that, so the copy kept landing above the device policy and was re-created and deleted every check. Now each policy is re-created at most twice; if UniFi still puts it above the device policy the add-on stops and sends a "changes to UniFi paused" alert asking you to move it in UniFi's policy table.
+- **Write budget:** at most 20 routing-policy writes and 12 VPN-client switches per 10 minutes, over all groups. When one is spent the add-on stops making that kind of change for 30 minutes and sends a critical alert, so no future bug can keep UniFi busy. The Status data now shows the counters (`guard`).
+- **A VPN client you stopped stays stopped:** if every client of a group is switched off in UniFi and the add-on did not do it, the group pauses instead of switching a client back on. Resume the group to let it choose again.
+- **A tunnel that is connected but passes nothing is now detected:** UniFi's traffic-flow log (last 5 minutes) shows tunnels where many flows get no answer and far less comes in than goes out. Such a tunnel is failed over. It needs real traffic through the tunnel (at least 20 flows and 100 kB sent); an idle tunnel is never judged. Settings: `detection.exit_flows` (on by default).
+
 ## 1.0.1
 
 - Renamed from "HA UniFi VPN Watchdog" to **UniFi VPN Watchdog**: the name Home Assistant shows, the folder, the Docker image (`ghcr.io/bassem-elsodany/unifi-vpn-watchdog`) and the command (`unifi-vpn-watchdog`).

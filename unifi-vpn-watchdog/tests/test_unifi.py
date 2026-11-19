@@ -36,6 +36,9 @@ def make(fail=None):
         if p.endswith("/stat/sta"):
             return httpx.Response(200, json={"data": [{"mac": "AA:BB", "name": "TV", "ip": "10.0.50.5", "network": "vlan50", "tx_bytes-r": 1000, "rx_bytes-r": 24000, "is_wired": True},
                                                       {"mac": "CC:DD", "hostname": "phone", "ip": "10.0.50.6", "network": "vlan50"}]})
+        if p.endswith("/traffic-flows"):
+            f = lambda out, tx, rx: {"out": {"network_id": out}, "traffic_data": {"bytes_tx": tx, "bytes_rx": rx}}      # noqa: E731
+            return httpx.Response(200, json={"data": [f("t1", 100, 0), f("t1", 50, 900), f("t1", 10, 0), f("n20", 5, 5), {"out": None}, {}]})
         if p.endswith("/stat/health"):
             return httpx.Response(200, json={"data": [{"subsystem": "wan", "wan_ip": "92.0.0.1"}]})
         return httpx.Response(200, json={})
@@ -120,3 +123,28 @@ def test_it_changes_only_policies_named_like_its_own():
         assert sent[-1][0] == "DELETE" and sent[-1][1].endswith("/trafficroutes/own1")
     finally:
         ROUTES.pop()
+
+
+def test_flows_are_summed_per_vpn_client_only_and_read_at_most_every_30_seconds():
+    c, sent = make()
+    flows = c.snapshot().flows
+    assert set(flows) == {"t1"}                                       # flows to the LAN or with no exit are ignored
+    st = flows["t1"]
+    assert (st.flows, st.zero_rx, st.tx, st.rx) == (3, 2, 160, 900)
+    c.snapshot()
+    assert len([x for x in sent if x[1].endswith("/traffic-flows")]) == 1       # cached: the engine takes several snapshots per cycle
+    body = next(x[2] for x in sent if x[1].endswith("/traffic-flows"))
+    assert body["pageSize"] == 1000 and body["timestampTo"] - body["timestampFrom"] == 300_000
+
+
+def test_a_failing_flow_log_is_not_fatal_and_judges_nothing():
+    c, sent = make()
+    c._request_real = c._request
+
+    def request(method, path, json=None):
+        if path.endswith("/traffic-flows"):
+            raise UniFiError("boom")
+        return c._request_real(method, path, json)
+
+    c._request = request
+    assert c.snapshot().flows == {}

@@ -43,6 +43,12 @@ EVENTS: dict[str, dict[str, Any]] = {
         "title": "VPN {group}: rotation skipped",
         "message": "{reason}",
     },
+    "udm_guard": {
+        "when": "The watchdog stopped changing UniFi on purpose: too many routing-policy or VPN-client changes in a short time, or UniFi keeps putting a policy where it cannot work. Every change re-provisions the whole UniFi network (every VLAN slows down).",
+        "level": "warning", "enabled": True,
+        "title": "VPN watchdog: changes to UniFi paused",
+        "message": "{reason}",
+    },
     "exhausted": {
         "when": "The active tunnel is down and every candidate failed or is paused after failing. Needs your attention.",
         "level": "critical", "enabled": True,
