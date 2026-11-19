@@ -1,5 +1,5 @@
 name: UniFi VPN Watchdog
-version: "1.0.2"
+version: "1.1.0"
 slug: ha_unifi_vpn_watchdog
 description: "Keeps your VLANs on a working VPN: health-checks UniFi WireGuard VPN clients in groups, fails over to the next client in your order, and can keep the routing policies of your VLANs pointed at the active one."
 url: https://github.com/bassem-elsodany/homelab-ha-addons/tree/main/unifi-vpn-watchdog
@@ -25,6 +25,11 @@ options:
   mqtt_port: 1883
   mqtt_username: ""
   mqtt_password: ""
+  udm_ssh_host: ""
+  udm_ssh_user: ""
+  udm_ssh_password: ""
+  udm_ssh_key_file: "udm_ssh_key"
+  udm_on_stop: keep
 schema:
   unifi_url: str
   unifi_api_key: password
@@ -34,3 +39,8 @@ schema:
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
+  udm_ssh_host: str?
+  udm_ssh_user: str?
+  udm_ssh_password: password?
+  udm_ssh_key_file: str?
+  udm_on_stop: list(keep|direct)

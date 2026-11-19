@@ -473,6 +473,27 @@ def load_raw(text: str) -> dict[str, Any]:
     return back(raw)
 
 
+_UDM_ENV = {"UDM_SSH_HOST": "host", "UDM_SSH_USER": "user", "UDM_SSH_PASSWORD": "password", "UDM_SSH_KEY_FILE": "key_file"}
+
+
+def _overlay_udm(raw: dict[str, Any], env: dict[str, str]) -> None:
+    """The add-on's UDM options arrive as environment variables and win over the file, so an older config.yaml (without a `probe.ssh`
+    section) still gets them. An empty value changes nothing."""
+    probe = raw.get("probe")
+    if probe is None:
+        probe = raw["probe"] = {}
+    if not isinstance(probe, dict):
+        return
+    for var, field in _UDM_ENV.items():
+        if env.get(var):
+            ssh = probe.get("ssh")
+            if not isinstance(ssh, dict):
+                ssh = probe["ssh"] = {}
+            ssh[field] = env[var]
+    if env.get("UDM_ON_STOP"):
+        probe["on_stop"] = env["UDM_ON_STOP"]
+
+
 def parse_config(text: str, env: dict[str, str] | None = None) -> Config:
     safe, found = _protect(text)
     try:
@@ -481,7 +502,9 @@ def parse_config(text: str, env: dict[str, str] | None = None) -> Config:
         raise ConfigError(f"invalid YAML: {e}") from e
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a mapping")
-    raw = _restore(raw, found, dict(os.environ) if env is None else env)
+    environment = dict(os.environ) if env is None else env
+    raw = _restore(raw, found, environment)
+    _overlay_udm(raw, environment)
     errs = removed_settings(raw)
     if errs:
         raise ConfigError("\n".join(errs))

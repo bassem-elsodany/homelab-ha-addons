@@ -20,6 +20,9 @@ detection:
 
 probe:
   mode: none                      # none | direct  (see README: "Probe modes")
+  # The tunnel test run on the UDM over SSH (see DOCS.md). Off until host, user and a key are set; in Home Assistant use the add-on options instead.
+  # ssh: {host: 192.168.1.1, user: watchdog, key_file: /config/udm_ssh_key}
+  # on_stop: keep                 # keep | direct: what a group does when it stops and waits for you
   require: 1                      # endpoints that must agree
   timeout_seconds: 8
   country_aliases: {GB: [UK]}
