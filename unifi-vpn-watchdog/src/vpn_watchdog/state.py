@@ -26,6 +26,7 @@ class GroupState:
     current_id: str | None = None
     since: float | None = None
     last_switch_ts: float = 0.0
+    last_attempt_ts: float = 0.0     # the last attempt to find a working tunnel (the UDM test spaces attempts out)
     switches: list[float] = field(default_factory=list)
     paused: bool = False
     status_failures: int = 0

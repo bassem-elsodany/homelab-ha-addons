@@ -127,8 +127,10 @@ class QuarantineCfg(_M):
 
 class SwitchingCfg(_M):
     connect_timeout_seconds: float = Field(40, ge=5)
-    min_hold_seconds: int = Field(60, ge=0)                  # minimum time between switches (hard failures bypass it)
-    max_switches_per_hour: int = Field(6, ge=1)
+    min_hold_seconds: int = Field(600, ge=0)                 # minimum time between switches (hard failures bypass it)
+    max_switches_per_hour: int = Field(3, ge=1)
+    max_switches_per_day: int = Field(6, ge=1)
+    attempt_gap_seconds: int = Field(120, ge=0)              # with the UDM test: time between two attempts to find a working tunnel (one candidate each)
     quarantine: QuarantineCfg = QuarantineCfg()
     on_exhausted: Literal["keep", "kill_switch"] = "keep"      # "kill_switch" is refused (see removed_settings): it changed a routing policy
 
@@ -136,7 +138,7 @@ class SwitchingCfg(_M):
 class FailbackCfg(_M):
     enabled: bool = True
     check_interval_seconds: int = Field(120, ge=10)
-    stable_seconds: int = Field(300, ge=0)
+    stable_seconds: int = Field(600, ge=0)
 
 
 class NetRef(_M):

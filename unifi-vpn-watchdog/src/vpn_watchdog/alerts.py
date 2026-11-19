@@ -61,6 +61,12 @@ EVENTS: dict[str, dict[str, Any]] = {
         "title": "VPN {group}: {tunnel} is working again",
         "message": "{reason}",
     },
+    "check_hold": {
+        "when": "A tunnel failed its test, but the cause is probably not that one tunnel (every VPN failed, the plain internet is down, or the UDM is overloaded), so nothing was changed. At most one alert per 30 minutes.",
+        "level": "warning", "enabled": True,
+        "title": "VPN {group}: nothing changed",
+        "message": "{reason}",
+    },
     "exhausted": {
         "when": "The active tunnel is down and every candidate failed or is paused after failing. Needs your attention.",
         "level": "critical", "enabled": True,

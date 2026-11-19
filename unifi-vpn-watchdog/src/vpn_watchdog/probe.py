@@ -108,6 +108,15 @@ class TunnelTester:
     def can_pretest(self) -> bool:
         return False
 
+    one_candidate_per_attempt = False        # the UDM test tries one candidate per attempt and spaces attempts out
+
+    def context(self) -> str | None:
+        """A reason to change nothing right now (not used by this tester)."""
+        return None
+
+    def settled(self) -> bool:
+        return True
+
     def test(self, tunnel: Tunnel, snap: Snapshot, *, pre: bool, expect: str | None = None) -> ProbeResult | None:
         """Returns None when this tunnel cannot be tested in the current mode."""
         if self.cfg.mode != "direct" or pre:
@@ -140,6 +149,8 @@ class UdmTester(TunnelTester):
     @property
     def can_pretest(self) -> bool:
         return True
+
+    one_candidate_per_attempt = True
 
     def _usable(self) -> UdmReading | None:
         last = self._last

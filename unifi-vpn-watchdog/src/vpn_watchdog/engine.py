@@ -80,6 +80,8 @@ class Engine:
         self._route_fail: dict[str, float] = {}     # group -> when its routing last failed to apply (retried after a pause, not every cycle)
         self._route_writes: deque[float] = deque()        # when the last routing-policy writes happened (the write budget)
         self._route_guard_until = 0.0
+        self._attempt_counted: set[str] = set()            # groups whose current attempt already counts as a switch (UDM test), so _commit does not count it twice
+        self._hold_notified: dict[str, float] = {}        # group -> when check_hold was last sent (one alert per 30 minutes)
         self._slow_notified: dict[str, float] = {}        # VPN client id -> when it was last reported slow (one alert per 30 minutes)
         self._tunnel_toggles: deque[float] = deque()
         self._toggle_guard_until = 0.0
@@ -541,9 +543,25 @@ class Engine:
     # ------------------------------------------------------------------ switching
     def _failover(self, g: GroupCfg, st: GroupSettings, gs: GroupState, cur: Tunnel | None,
                   hard: bool, why: str) -> None:
+        udm = bool(getattr(self.tester, "one_candidate_per_attempt", False))
+        if udm:
+            held = None if hard else self.tester.context()
+            if held:
+                self._hold_off(g, gs, held)
+                return
+            if not self.tester.settled():
+                gs.last_decision = "waiting: UniFi re-provisioned its network in the last minute"
+                return
+            if self.clock.now() - gs.last_attempt_ts < st.switching.attempt_gap_seconds:
+                gs.last_decision = f"waiting {st.switching.attempt_gap_seconds}s between attempts"
+                return
         if not self._rate_ok(g, st, gs, hard):
             return
         now = self.clock.now()
+        if udm:
+            gs.last_attempt_ts = now
+            gs.switches = [t for t in gs.switches if now - t < 86400] + [now]       # an attempt costs the UDM what a switch costs it
+            self._attempt_counted.add(g.name)
         if cur:
             ts = self.store.tunnel(cur.id)
             if ts.quarantined_until <= now:
@@ -561,12 +579,25 @@ class Engine:
                 return
             self._quarantine(cand, reason, st)
             log.warning("group %s: candidate %s rejected: %s", g.name, cand.name, reason)
+            if udm:       # one candidate per attempt: the next one is tried at the next attempt, not now
+                gs.last_decision = f"{cand.name} failed its test ({reason}); the next attempt is in {st.switching.attempt_gap_seconds}s"
+                if any(c.id != cand.id and self.store.tunnel(c.id).quarantined_until <= now for c in cands):
+                    return
+                break
         if not gs.exhausted:
             gs.exhausted = True
             self.notifier.emit("exhausted", f"VPN {g.name}: no healthy tunnel",
                                f"{cur.name if cur else 'current'} is down and {tried} candidate(s) failed or are quarantined",
                                level="critical", key=g.name, group=g.name, tunnel=cur.name if cur else "", tried=tried)
         gs.last_decision = f"exhausted: {why}"
+
+    def _hold_off(self, g: GroupCfg, gs: GroupState, reason: str) -> None:
+        """The cause is probably not one VPN (every VPN failed, the internet is down, the UDM is overloaded): change nothing and say so, at most every 30 minutes."""
+        gs.last_decision = f"holding: {reason}"
+        now = self.clock.now()
+        if now - self._hold_notified.get(g.name, -1e12) >= 1800:
+            self._hold_notified[g.name] = now
+            self.notifier.emit("check_hold", f"VPN {g.name}: nothing changed", reason, level="warning", key=f"{g.name}:hold", group=g.name, reason=reason)
 
     def _position(self, g: GroupCfg, t: Tunnel | None) -> str:
         return position_label(g, t)
@@ -612,7 +643,10 @@ class Engine:
         prev = gs.current_id
         self._set_current(gs, cand.id)
         gs.last_switch_ts = now
-        gs.switches = [t for t in gs.switches if now - t < 3600] + [now]
+        if g.name in self._attempt_counted:
+            self._attempt_counted.discard(g.name)
+        else:
+            gs.switches = [t for t in gs.switches if now - t < 86400] + [now]
         self.store.tunnel(cand.id).fail_streak = 0
         gs.exhausted = False
         gs.last_decision = f"switched to {cand.name}: {reason}"
@@ -779,9 +813,12 @@ class Engine:
     def _rate_ok(self, g: GroupCfg, st: GroupSettings, gs: GroupState, hard: bool) -> bool:
         now = self.clock.now()
         recent = [t for t in gs.switches if now - t < 3600]
+        day = [t for t in gs.switches if now - t < 86400]
         reason = None
         if len(recent) >= st.switching.max_switches_per_hour:
             reason = f"already switched {len(recent)}x in the last hour"
+        elif len(day) >= st.switching.max_switches_per_day:
+            reason = f"already switched {len(day)}x in the last day (limit {st.switching.max_switches_per_day})"
         elif not hard and now - gs.last_switch_ts < st.switching.min_hold_seconds:
             reason = f"last switch was {now - gs.last_switch_ts:.0f}s ago (min hold {st.switching.min_hold_seconds}s)"
         if reason:
