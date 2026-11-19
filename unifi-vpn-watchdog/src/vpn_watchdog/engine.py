@@ -80,6 +80,7 @@ class Engine:
         self._route_fail: dict[str, float] = {}     # group -> when its routing last failed to apply (retried after a pause, not every cycle)
         self._route_writes: deque[float] = deque()        # when the last routing-policy writes happened (the write budget)
         self._route_guard_until = 0.0
+        self._slow_notified: dict[str, float] = {}        # VPN client id -> when it was last reported slow (one alert per 30 minutes)
         self._tunnel_toggles: deque[float] = deque()
         self._toggle_guard_until = 0.0
         self._disabled_by_me: set[str] = set()            # VPN clients the watchdog switched off itself (any other client that is off was stopped by you)
@@ -517,7 +518,15 @@ class Engine:
             if res is not None:
                 gs.last_probe = res.as_dict()
                 if res.ok:
+                    if gs.probe_failures >= 2:
+                        self.notifier.emit("tunnel_recovered", f"VPN {g.name}: {cur.name} is working again", f"it failed {gs.probe_failures} tests in a row and then passed",
+                                           key=f"{g.name}:recovered", group=g.name, tunnel=cur.name,
+                                           reason=f"it failed {gs.probe_failures} tests in a row and then passed")
                     gs.probe_failures = 0
+                    if res.reason.startswith("slow:") and now - self._slow_notified.get(cur.id, -1e12) >= 1800:
+                        self._slow_notified[cur.id] = now
+                        self.notifier.emit("tunnel_slow", f"VPN {g.name}: {cur.name} is slow", res.reason, level="warning", key=f"{g.name}:slow",
+                                           group=g.name, tunnel=cur.name, reason=res.reason)
                 else:
                     gs.probe_failures += 1
                     if res.leak:

@@ -51,8 +51,8 @@ class ExitFlowsCfg(_M):
 
 class DetectionCfg(_M):
     failure_threshold: int = Field(3, ge=1)          # consecutive bad status polls before the tunnel is declared down
-    probe_failure_threshold: int = Field(2, ge=1)    # consecutive bad exit-IP probes before the tunnel is declared down
-    probe_interval_seconds: int = Field(30, ge=5)
+    probe_failure_threshold: int = Field(3, ge=1)    # consecutive bad tunnel tests before the tunnel is declared down (a test that could not run counts for nothing)
+    probe_interval_seconds: int = Field(60, ge=5)
     blackhole: BlackholeCfg = BlackholeCfg()
     exit_flows: ExitFlowsCfg = ExitFlowsCfg()
 
